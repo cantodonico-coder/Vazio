@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Shorts Auto Next",
+  "version": "1.0",
+  "description": "Passa para o próximo YouTube Short automaticamente.",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Shorts Auto Next"
+  },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Liga/desliga o auto-next"
+    }
+  }
+}

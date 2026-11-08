@@ -1,0 +1,35 @@
+name: Gerar APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - run: gradle assembleDebug --stacktrace
+      - run: cp app/build/outputs/apk/debug/app-debug.apk ../ShortsAutoNext.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShortsAutoNext-apk
+          path: ShortsAutoNext.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Shorts Auto Next APK ${{ github.run_number }}
+          files: ShortsAutoNext.apk

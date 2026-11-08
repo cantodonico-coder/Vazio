@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="service_desc">Passa para o próximo YouTube Short automaticamente. Só atua dentro do app do YouTube e não coleta dados.</string>
+</resources>

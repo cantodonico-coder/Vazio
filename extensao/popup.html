@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 260px; margin: 0; padding: 14px; font: 14px system-ui, sans-serif; background: #181818; color: #eee; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin: 10px 0; gap: 8px; }
+  input[type=number] { width: 60px; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 6px; padding: 4px; }
+  small { color: #999; display: block; margin-top: 2px; font-size: 11px; }
+  #toggle { width: 100%; padding: 10px; border: 0; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; color: #fff; }
+  #status { color: #aaa; font-size: 12px; margin-top: 10px; display: flex; justify-content: space-between; }
+  #reset { background: none; border: 0; color: #4ea1ff; cursor: pointer; font-size: 12px; padding: 0; }
+</style>
+</head>
+<body>
+  <h1>⏭ Shorts Auto Next</h1>
+  <button id="toggle">…</button>
+
+  <div class="row"><label>Atraso entre vídeos (s)<small>0 = imediato</small></label><input id="delay" type="number" min="0" step="0.5"></div>
+  <div class="row"><label>Pular Shorts após (s)<small>0 = assistir inteiro</small></label><input id="maxSecs" type="number" min="0"></div>
+  <div class="row"><label>Parar após N vídeos<small>0 = sem limite</small></label><input id="stopVideos" type="number" min="0"></div>
+  <div class="row"><label>Parar após N minutos<small>0 = sem limite</small></label><input id="stopMinutes" type="number" min="0"></div>
+
+  <div id="status"><span id="info">—</span><button id="reset">zerar</button></div>
+  <script src="popup.js"></script>
+</body>
+</html>
