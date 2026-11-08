@@ -16,7 +16,9 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
 
-    private lateinit var status: TextView
+    private lateinit var accStatus: TextView
+    private lateinit var notifStatus: TextView
+    private lateinit var srcStatus: TextView
 
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
@@ -29,18 +31,28 @@ class MainActivity : Activity() {
         }
 
         fun label(t: String, size: Float = 15f) = TextView(this).apply {
-            text = t; textSize = size; setTextColor(Color.parseColor("#EEEEEE")); setPadding(0, 24, 0, 6)
+            text = t; textSize = size; setTextColor(Color.parseColor("#EEEEEE")); setPadding(0, 20, 0, 6)
         }
 
         col.addView(label("⏭ Shorts Auto Next", 22f))
 
-        status = label("", 14f)
-        col.addView(status)
-
+        accStatus = label("", 14f); col.addView(accStatus)
         col.addView(Button(this).apply {
             text = "1. Ativar acessibilidade"
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         })
+
+        notifStatus = label("", 14f); col.addView(notifStatus)
+        col.addView(Button(this).apply {
+            text = "2. Permitir acesso a notificações"
+            setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+        })
+        col.addView(TextView(this).apply {
+            text = "Necessário para saber quando o Short termina. Nenhuma notificação é lida ou guardada."
+            textSize = 12f; setTextColor(Color.GRAY)
+        })
+
+        srcStatus = label("", 14f); col.addView(srcStatus)
 
         col.addView(Switch(this).apply {
             text = "Auto-next ligado"
@@ -70,18 +82,17 @@ class MainActivity : Activity() {
             })
         }
 
-        numField("delay", "Atraso entre vídeos (s)", "0 = imediato", 0f, decimal = true)
-        numField("maxSecs", "Pular Shorts após (s)", "0 = assistir inteiro", 0)
+        numField("delay", "Atraso entre vídeos (s)", "0 = passa assim que termina", 0f, decimal = true)
+        numField("maxSecs", "Pular Shorts longos após (s)", "Opcional · 0 = sempre assistir até o fim", 0)
         numField("stopVideos", "Parar após N vídeos", "0 = sem limite · ao parar, volta para a tela inicial", 0)
         numField("stopMinutes", "Parar após N minutos", "0 = sem limite", 0)
-        numField("fallbackSecs", "Tempo padrão (s)", "Usado se o app não conseguir ler a barra de progresso do Short", 30)
 
         col.addView(Button(this).apply {
             text = "Salvar"
             setOnClickListener { currentFocus?.clearFocus(); finish() }
         })
 
-        col.addView(label("Botão flutuante vermelho aparece nos Shorts: toque para ligar/desligar.", 12f))
+        col.addView(label("Liga/desliga rápido: puxe a barra de notificações → editar blocos → arraste \"Shorts Auto\".", 12f))
 
         setContentView(ScrollView(this).apply {
             addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -90,9 +101,18 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        val on = (Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: "")
+        val acc = (Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: "")
             .contains(packageName)
-        status.text = if (on) "✅ Serviço ativo — abra os Shorts no YouTube" else "⚠️ Serviço desativado — toque no botão abaixo"
-        status.setTextColor(if (on) Color.parseColor("#4CAF50") else Color.parseColor("#FFB300"))
+        val notif = (Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: "")
+            .contains(packageName)
+
+        fun paint(tv: TextView, ok: Boolean, okTxt: String, badTxt: String) {
+            tv.text = if (ok) okTxt else badTxt
+            tv.setTextColor(Color.parseColor(if (ok) "#4CAF50" else "#FFB300"))
+        }
+        paint(accStatus, acc, "✅ Acessibilidade ativa", "⚠️ Acessibilidade desativada")
+        paint(notifStatus, notif, "✅ Acesso a notificações liberado", "⚠️ Acesso a notificações pendente")
+        srcStatus.text = "Detecção do fim do Short: ${Prefs.source(this)}"
+        srcStatus.setTextColor(Color.parseColor("#BBBBBB"))
     }
 }

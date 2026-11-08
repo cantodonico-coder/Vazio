@@ -2,48 +2,50 @@ package com.nicoshake.shortsautonext
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ComponentName
 import android.content.SharedPreferences
-import android.graphics.Color
 import android.graphics.Path
-import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
+import android.media.MediaMetadata
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.WindowManager
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.TextView
 import android.widget.Toast
 
+/**
+ * Passa para o próximo Short quando o atual TERMINA.
+ * Fonte 1: MediaSession do YouTube (posição e duração reais do vídeo).
+ * Fonte 2: barra de progresso do Short, quando ela está acessível.
+ * Sem tempo fixo: se nenhuma fonte estiver disponível, não avança.
+ */
 class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private val yt = "com.google.android.youtube"
     private val h = Handler(Looper.getMainLooper())
 
     private var onShorts = false
-    private var shortStart = 0L          // quando o Short atual começou
-    private var sessionStart = 0L        // início da sessão (limite de minutos)
-    private var count = 0                // Shorts pulados na sessão
-    private var lastProgress = -1f       // 0..1 lido da barra de progresso
+    private var shortStart = 0L
+    private var sessionStart = 0L
+    private var count = 0
+    private var lastPosMs = -1L          // última posição lida (MediaSession)
+    private var lastFrac = -1f           // última fração lida (barra)
     private var pendingSwipe = false
-    private var ignoreScrollUntil = 0L   // ignora o scroll gerado pelo nosso próprio gesto
-
-    private var wm: WindowManager? = null
-    private var badge: TextView? = null
+    private var ignoreScrollUntil = 0L
+    private var settleUntil = 0L         // depois de trocar de Short, espera o novo carregar
+    private var titleAtSwipe: String? = null
 
     override fun onServiceConnected() {
-        wm = getSystemService(WINDOW_SERVICE) as WindowManager
         Prefs.sp(this).registerOnSharedPreferenceChangeListener(this)
         resetSession()
-        createBadge()
         h.post(loop)
     }
 
     override fun onDestroy() {
         h.removeCallbacksAndMessages(null)
         Prefs.sp(this).unregisterOnSharedPreferenceChangeListener(this)
-        badge?.let { runCatching { wm?.removeView(it) } }
         super.onDestroy()
     }
 
@@ -51,7 +53,6 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
 
     override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
         if (key == "enabled" && Prefs.enabled(this)) resetSession()
-        paintBadge()
     }
 
     private fun resetSession() {
@@ -62,58 +63,75 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
 
     private fun newShort() {
         shortStart = System.currentTimeMillis()
-        lastProgress = -1f
+        lastPosMs = -1L
+        lastFrac = -1f
         pendingSwipe = false
+        settleUntil = SystemClock.elapsedRealtime() + 1500
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-        // usuário arrastou manualmente para outro Short → reinicia contagem do vídeo
+        // usuário arrastou manualmente → novo Short
         if (e?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
             e.packageName == yt && System.currentTimeMillis() > ignoreScrollUntil
-        ) newShort()
+        ) {
+            titleAtSwipe = null
+            newShort()
+        }
     }
 
-    // ---------- loop principal (a cada 400 ms) ----------
     private val loop = object : Runnable {
         override fun run() {
             runCatching { tick() }
-            h.postDelayed(this, 400)
+            h.postDelayed(this, 250)
         }
     }
 
     private fun tick() {
         val root = rootInActiveWindow
-        val inYt = root?.packageName == yt
-        onShorts = inYt && root != null && isShortsScreen(root)
-        paintBadge()
+        onShorts = root != null && root.packageName == yt && isShortsScreen(root)
         if (!onShorts || !Prefs.enabled(this) || pendingSwipe) return
 
         val now = System.currentTimeMillis()
-
-        // limite de minutos
         val stopMin = Prefs.stopMinutes(this)
         if (stopMin > 0 && now - sessionStart >= stopMin * 60_000L) {
             stop("Parado: $stopMin min de Shorts")
             return
         }
 
-        val elapsed = (now - shortStart) / 1000f
-        val prog = readProgress(root!!)
-        var ended = false
+        // opcional: pular Shorts longos
+        val max = Prefs.maxSecs(this)
+        if (max > 0 && (now - shortStart) / 1000 >= max) { scheduleNext(); return }
 
-        if (prog != null) {
-            // chegou ao fim, ou voltou ao início (YouTube repete o Short em loop)
-            if (prog >= 0.97f) ended = true
-            if (lastProgress > 0.85f && prog < 0.15f) ended = true
-            lastProgress = prog
-        } else if (elapsed >= Prefs.fallbackSecs(this)) {
-            ended = true // não deu pra ler a barra → usa o tempo padrão
+        if (SystemClock.elapsedRealtime() < settleUntil) return
+
+        // ---- Fonte 1: MediaSession ----
+        val media = readMedia()
+        if (media != null) {
+            val (pos, dur, title) = media
+            // ainda é o Short antigo? espera o novo carregar (até 4 s)
+            if (titleAtSwipe != null && title == titleAtSwipe &&
+                SystemClock.elapsedRealtime() < settleUntil + 2500) return
+            titleAtSwipe = null
+            Prefs.setSource(this, "MediaSession ✅")
+
+            val nearEnd = pos >= dur - 300
+            val looped = lastPosMs > dur - 1500 && pos < 1500 // YouTube repete em loop
+            lastPosMs = pos
+            if (nearEnd || looped) scheduleNext()
+            return
         }
 
-        val max = Prefs.maxSecs(this)
-        if (max > 0 && elapsed >= max) ended = true
+        // ---- Fonte 2: barra de progresso ----
+        val frac = readProgressBar(root!!)
+        if (frac != null) {
+            Prefs.setSource(this, "Barra de progresso ✅")
+            val ended = frac >= 0.98f || (lastFrac > 0.85f && frac < 0.15f)
+            lastFrac = frac
+            if (ended) scheduleNext()
+            return
+        }
 
-        if (ended) scheduleNext()
+        Prefs.setSource(this, "Nenhuma ❌ — permita o acesso a notificações")
     }
 
     private fun scheduleNext() {
@@ -135,11 +153,11 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
         Prefs.setEnabled(this, false)
         pendingSwipe = false
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-        performGlobalAction(GLOBAL_ACTION_HOME) // sai dos Shorts de verdade
+        performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
-    // ---------- gesto de arrastar para cima ----------
     private fun swipeUp() {
+        titleAtSwipe = readMedia()?.third
         val dm = resources.displayMetrics
         val x = dm.widthPixels * 0.5f
         val path = Path().apply {
@@ -151,12 +169,33 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
             .build()
         ignoreScrollUntil = System.currentTimeMillis() + 1200
         dispatchGesture(g, object : GestureResultCallback() {
-            override fun onCompleted(d: GestureDescription?) { newShort(); paintBadge() }
+            override fun onCompleted(d: GestureDescription?) { newShort() }
             override fun onCancelled(d: GestureDescription?) { pendingSwipe = false }
         }, null)
     }
 
-    // ---------- leitura da tela do YouTube ----------
+    // ---------- leitura do vídeo ----------
+
+    /** posição (ms), duração (ms) e título do que o YouTube está tocando */
+    private fun readMedia(): Triple<Long, Long, String?>? {
+        val msm = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+        val sessions = try {
+            msm.getActiveSessions(ComponentName(this, MediaListener::class.java))
+        } catch (e: SecurityException) {
+            return null // sem acesso a notificações
+        }
+        val c = sessions.firstOrNull { it.packageName == yt } ?: return null
+        val st = c.playbackState ?: return null
+        val meta = c.metadata ?: return null
+        val dur = meta.getLong(MediaMetadata.METADATA_KEY_DURATION)
+        if (dur <= 0) return null
+        var pos = st.position
+        if (st.state == PlaybackState.STATE_PLAYING && st.lastPositionUpdateTime > 0) {
+            pos += ((SystemClock.elapsedRealtime() - st.lastPositionUpdateTime) * st.playbackSpeed).toLong()
+        }
+        return Triple(pos.coerceIn(0, dur), dur, meta.getString(MediaMetadata.METADATA_KEY_TITLE))
+    }
+
     private fun isShortsScreen(root: AccessibilityNodeInfo): Boolean {
         var found = false
         walk(root, 300) { n ->
@@ -167,24 +206,22 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
         return found
     }
 
-    /** procura uma barra de progresso (SeekBar/ProgressBar) e devolve 0..1 */
-    private fun readProgress(root: AccessibilityNodeInfo): Float? {
+    private fun readProgressBar(root: AccessibilityNodeInfo): Float? {
         var result: Float? = null
         walk(root, 400) { n ->
             val r = n.rangeInfo
             if (r != null && r.max > r.min) {
                 val id = n.viewIdResourceName ?: ""
                 val cls = n.className?.toString() ?: ""
-                if (id.contains("progress") || id.contains("seek") || cls.contains("SeekBar") || cls.contains("ProgressBar")) {
-                    result = ((r.current - r.min) / (r.max - r.min)).coerceIn(0f, 1f)
-                }
+                if (id.contains("progress") || id.contains("seek") || id.contains("time_bar") ||
+                    cls.contains("SeekBar") || cls.contains("ProgressBar")
+                ) result = ((r.current - r.min) / (r.max - r.min)).coerceIn(0f, 1f)
             }
             result != null
         }
         return result
     }
 
-    /** percorre a árvore até `limit` nós; para quando `visit` retorna true */
     private fun walk(root: AccessibilityNodeInfo, limit: Int, visit: (AccessibilityNodeInfo) -> Boolean) {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
@@ -195,38 +232,5 @@ class AutoNextService : AccessibilityService(), SharedPreferences.OnSharedPrefer
             if (visit(n)) return
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
-    }
-
-    // ---------- botão flutuante liga/desliga ----------
-    private fun createBadge() {
-        val tv = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setPadding(28, 14, 28, 14)
-            background = GradientDrawable().apply { cornerRadius = 60f }
-            setOnClickListener { Prefs.setEnabled(this@AutoNextService, !Prefs.enabled(this@AutoNextService)) }
-        }
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 24; y = 180
-        }
-        runCatching { wm?.addView(tv, lp) }
-        badge = tv
-        paintBadge()
-    }
-
-    private fun paintBadge() {
-        val b = badge ?: return
-        val on = Prefs.enabled(this)
-        b.visibility = if (onShorts) android.view.View.VISIBLE else android.view.View.GONE
-        (b.background as? GradientDrawable)?.setColor(if (on) 0xE6E62117.toInt() else 0xE6555555.toInt())
-        val stopV = Prefs.stopVideos(this)
-        b.text = if (on) "⏭ Auto ON · $count" + (if (stopV > 0) "/$stopV" else "") else "⏸ Auto OFF"
     }
 }
